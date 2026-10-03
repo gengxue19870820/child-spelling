@@ -8,7 +8,7 @@
   :root{
     --ink:#2b2b2b; --paper:#fbf7ef; --card:#ffffff; --line:#e7ddc9;
     --accent:#3a7ca5; --accent2:#c9702a; --ok:#2e8b57; --no:#c0392b;
-    --soft:#f3ece0;
+    --soft:#f3ece0; --review:#8e44ad;
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
   body{
@@ -54,15 +54,31 @@
   textarea{width:100%; height:120px; font-size:13px; border:1px solid var(--line); border-radius:10px; padding:8px; margin-top:6px; resize:vertical;}
   .note{font-size:12px; color:#9a8c73; line-height:1.6; margin-top:8px;}
   .badge{display:inline-block; background:var(--accent2); color:#fff; font-size:11px; padding:2px 8px; border-radius:8px; margin-left:6px;}
+  .card.review{border-left:4px solid var(--review);}
+  .meta .tag-new{background:var(--accent); color:#fff; font-size:11px; padding:1px 7px; border-radius:6px; margin-right:4px;}
+  .meta .tag-review{background:var(--review); color:#fff; font-size:11px; padding:1px 7px; border-radius:6px; margin-right:4px;}
+  .section-title{font-size:14px; font-weight:600; color:#8a7c63; margin:16px 0 8px; border-left:3px solid var(--accent); padding-left:8px;}
+  .section-title.review-title{border-left-color:var(--review);}
+  .stats-bar{display:flex; gap:10px; margin:10px 0;}
+  .stats-bar .st{flex:1; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:8px 10px; text-align:center;}
+  .stats-bar .st b{display:block; font-size:20px; color:var(--accent);}
+  .stats-bar .st span{font-size:11px; color:#8a7c63;}
+  .stats-bar .st.rev b{color:var(--review);}
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <h1>每日单词 · 拼写自测<span class="badge" id="grpBadge">第 1 组</span></h1>
+    <h1>每日单词 · 拼写自测<span class="badge" id="grpBadge">第 1 天</span></h1>
     <div class="sub" id="dateSub">今天要背 10 个单词</div>
     <div class="sub" style="opacity:.85;font-size:12px;margin-top:2px;">公众号「学习随记伴成长」每日推送</div>
   </header>
+
+  <div class="stats-bar">
+    <div class="st"><b id="statNew">10</b><span>今日新词</span></div>
+    <div class="st rev"><b id="statRev">5</b><span>复习旧词</span></div>
+    <div class="st"><b id="statTotal">15</b><span>合计</span></div>
+  </div>
 
   <div class="tabs">
     <div class="tab on" id="tabCards" onclick="switchTab('cards')">📖 今日词卡</div>
@@ -73,7 +89,7 @@
 
   <div id="quizView" style="display:none">
     <div class="card q-word">
-      <div class="meta" id="qProgress">第 1 / 10 个</div>
+      <div class="meta" id="qProgress">第 1 / 15 个</div>
       <div class="mean" id="qMeaning">—</div>
       <div class="ph" id="qPhon">—</div>
       <span class="speak" onclick="speak(currentWord.word)">🔊</span>
@@ -92,12 +108,14 @@
     <textarea id="csvBox" placeholder="word,phonetic,meaning,example&#10;apple,/ˈæp.əl/,苹果,An apple a day."></textarea>
     <button class="btn ghost" onclick="applyCSV()" style="margin-top:6px">保存并应用</button>
     <button class="btn ghost" onclick="resetCSV()" style="margin-top:6px">恢复内置词库</button>
+    <button class="btn ghost" onclick="resetHistory()" style="margin-top:6px;color:var(--no)">清除学习记录</button>
     <div class="note">
       接入说明：本页为单文件 HTML，可直接<br>
       ① 公众号：放进「自定义菜单/H5 图文链接」；<br>
       ② 小程序：用 &lt;web-view src="本页地址"&gt; 承载拼写自测；<br>
       ③ 每日推送：订阅号每天群发图文（带本页链接），或在小程序内引导「订阅消息」。<br>
-      词库可改为你从原 Child Spelling app 导出的单词，做成 CSV 后粘贴上方即可。
+      词库可改为你从原 Child Spelling app 导出的单词，做成 CSV 后粘贴上方即可。<br>
+      ④ 每日自动推送 10 新词 + 5 复习词，复习词从过去几天的新词中抽取。
     </div>
   </div>
 </div>
@@ -1017,60 +1035,158 @@ prosecute,,依法处置,`;
 
 let WORDS = parseCSV(BUILTIN);
 
+const STORAGE_KEY_HISTORY = 'spelling_history';
+const STORAGE_KEY_CSV = 'spelling_csv';
+const NEW_PER_DAY = 10;
+const REVIEW_PER_DAY = 5;
+const START_DATE = new Date(2026, 0, 1);
+
 function parseCSV(txt){
   const lines = txt.trim().split(/\r?\n/).filter(l=>l.trim());
   const out = [];
   for(let i=0;i<lines.length;i++){
-    if(i===0 && /word/i.test(lines[i])) continue; // 跳过表头
+    if(i===0 && /^word/i.test(lines[i].trim())) continue;
     const parts = lines[i].split(',');
     if(parts.length>=3) out.push({word:parts[0].trim(), phonetic:parts[1].trim(), meaning:parts[2].trim(), example:(parts[3]||'').trim()});
   }
   return out.length?out:[{word:'apple',phonetic:'',meaning:'(示例)',example:''}];
 }
 
-// ---------- 每日取 10 词（按日期确定性轮换） ----------
-function dailyWords(){
-  if(WORDS.length===0) return [];
-  const groupSize = 10;
-  const start = new Date(2026,0,1).getTime();
+function getDayIndex(){
   const today = new Date(); today.setHours(0,0,0,0);
-  const dayIndex = Math.floor((today.getTime()-start)/86400000);
-  const offset = (dayIndex*groupSize) % WORDS.length;
+  return Math.floor((today.getTime() - START_DATE.getTime()) / 86400000);
+}
+
+function loadHistory(){
+  try{ return JSON.parse(localStorage.getItem(STORAGE_KEY_HISTORY) || '{}'); }catch(e){ return {}; }
+}
+
+function saveHistory(h){
+  try{ localStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(h)); }catch(e){}
+}
+
+function getNewWords(){
+  if(WORDS.length===0) return [];
+  const dayIndex = getDayIndex();
+  const offset = (dayIndex * NEW_PER_DAY) % WORDS.length;
   const res = [];
-  for(let i=0;i<groupSize;i++){
-    res.push(WORDS[(offset+i)%WORDS.length]);
+  for(let i=0;i<NEW_PER_DAY;i++){
+    res.push(WORDS[(offset+i) % WORDS.length]);
   }
   return res;
 }
 
-// ---------- 渲染词卡 ----------
-function renderCards(){
-  const list = dailyWords();
-  const el = document.getElementById('cardsView');
-  el.innerHTML = list.map((w,i)=>`
-    <div class="card">
-      <div class="meta">第 ${i+1} 个</div>
-      <div class="w">${esc(w.word)} <span class="speak" onclick="speak('${esc(w.word)}')">🔊</span></div>
-      <div class="ph">${esc(w.phonetic)}</div>
-      <div class="mean">${esc(w.meaning)}</div>
-      ${w.example?`<div class="ex">${esc(w.example)}</div>`:''}
-    </div>`).join('');
-  document.getElementById('grpBadge').textContent = '第 '+(Math.floor((new Date().setHours(0,0,0,0)-new Date(2026,0,1))/86400000)+1)+' 天';
-  document.getElementById('dateSub').textContent = '今天要背 '+list.length+' 个单词';
+function getReviewWords(newWords){
+  const history = loadHistory();
+  const dayIndex = getDayIndex();
+  const newWordSet = new Set(newWords.map(w=>w.word.toLowerCase()));
+  const candidates = [];
+  for(let d=dayIndex-1; d>=0 && candidates.length<30; d--){
+    const key = 'day_'+d;
+    if(history[key] && history[key].length){
+      for(const w of history[key]){
+        if(!newWordSet.has(w.word.toLowerCase())){
+          candidates.push({word:w.word, phonetic:w.phonetic, meaning:w.meaning, example:w.example, fromDay:d});
+        }
+      }
+    }
+  }
+  if(candidates.length === 0){
+    if(WORDS.length > NEW_PER_DAY){
+      const fallback = [];
+      const totalDays = Math.ceil(WORDS.length / NEW_PER_DAY);
+      const prevDay = ((dayIndex - 1) % totalDays + totalDays) % totalDays;
+      const prevOffset = (prevDay * NEW_PER_DAY) % WORDS.length;
+      for(let i=0;i<Math.min(REVIEW_PER_DAY, WORDS.length-NEW_PER_DAY);i++){
+        const w = WORDS[(prevOffset+i)%WORDS.length];
+        if(!newWordSet.has(w.word.toLowerCase())) fallback.push(w);
+      }
+      return fallback.slice(0, REVIEW_PER_DAY);
+    }
+    return [];
+  }
+  let seed = dayIndex * 7 + 13;
+  function seededRandom(){ seed=(seed*16807+0)%2147483647; return seed/2147483647; }
+  for(let i=candidates.length-1;i>0;i--){
+    const j=Math.floor(seededRandom()*(i+1));
+    [candidates[i],candidates[j]]=[candidates[j],candidates[i]];
+  }
+  return candidates.slice(0, REVIEW_PER_DAY).map(c=>({word:c.word, phonetic:c.phonetic, meaning:c.meaning, example:c.example}));
 }
 
-// ---------- 自测 ----------
-let quizList=[], qIdx=0, qScore=0, currentWord=null, answered=false;
+function getTodayWords(){
+  const newWords = getNewWords();
+  const reviewWords = getReviewWords(newWords);
+  return {newWords, reviewWords, all:[...newWords, ...reviewWords]};
+}
+
+function recordToday(){
+  const history = loadHistory();
+  const key = 'day_'+getDayIndex();
+  const newWords = getNewWords();
+  history[key] = newWords.map(w=>({word:w.word, phonetic:w.phonetic, meaning:w.meaning, example:w.example}));
+  saveHistory(history);
+}
+
+function renderCards(){
+  const {newWords, reviewWords, all} = getTodayWords();
+  const el = document.getElementById('cardsView');
+  let html = '';
+  html += '<div class="section-title">\ud83d\udcd7 今日新词（'+newWords.length+' 个）</div>';
+  html += newWords.map((w,i)=>
+    '<div class="card">'+
+      '<div class="meta"><span class="tag-new">新词</span>第 '+(i+1)+' 个</div>'+
+      '<div class="w">'+esc(w.word)+' <span class="speak" onclick="speak(\''+esc(w.word)+'\')">\ud83d\udd0a</span></div>'+
+      (w.phonetic?'<div class="ph">'+esc(w.phonetic)+'</div>':'')+
+      '<div class="mean">'+esc(w.meaning)+'</div>'+
+      (w.example?'<div class="ex">'+esc(w.example)+'</div>':'')+
+    '</div>'
+  ).join('');
+  if(reviewWords.length > 0){
+    html += '<div class="section-title review-title">\ud83d\udd04 复习旧词（'+reviewWords.length+' 个）</div>';
+    html += reviewWords.map((w,i)=>
+      '<div class="card review">'+
+        '<div class="meta"><span class="tag-review">复习</span>第 '+(i+1)+' 个</div>'+
+        '<div class="w">'+esc(w.word)+' <span class="speak" onclick="speak(\''+esc(w.word)+'\')">\ud83d\udd0a</span></div>'+
+        (w.phonetic?'<div class="ph">'+esc(w.phonetic)+'</div>':'')+
+        '<div class="mean">'+esc(w.meaning)+'</div>'+
+        (w.example?'<div class="ex">'+esc(w.example)+'</div>':'')+
+      '</div>'
+    ).join('');
+  }
+  el.innerHTML = html;
+  document.getElementById('grpBadge').textContent = '第 '+(getDayIndex()+1)+' 天';
+  document.getElementById('dateSub').textContent = '今日 '+newWords.length+' 新词 + '+reviewWords.length+' 复习';
+  document.getElementById('statNew').textContent = newWords.length;
+  document.getElementById('statRev').textContent = reviewWords.length;
+  document.getElementById('statTotal').textContent = all.length;
+  recordToday();
+}
+
+let quizList=[], qIdx=0, qScore=0, currentWord=null, answered=false, quizTypes=[];
 function startQuiz(){
-  quizList = dailyWords(); qIdx=0; qScore=0; answered=false;
+  const {all, newWords} = getTodayWords();
+  quizList = shuffleArray(all);
+  const newSet = new Set(newWords.map(w=>w.word.toLowerCase()));
+  quizTypes = quizList.map(w=>newSet.has(w.word.toLowerCase())?'new':'review');
+  qIdx=0; qScore=0; answered=false;
   document.getElementById('qResult').style.display='none';
   document.getElementById('qRestart').style.display='none';
   showQuestion();
 }
+function shuffleArray(arr){
+  const a=[...arr];
+  for(let i=a.length-1;i>0;i--){
+    const j=Math.floor(Math.random()*(i+1));
+    [a[i],a[j]]=[a[j],a[i]];
+  }
+  return a;
+}
 function showQuestion(){
   answered=false;
   currentWord = quizList[qIdx];
-  document.getElementById('qProgress').textContent = '第 '+(qIdx+1)+' / '+quizList.length+' 个';
+  const type = quizTypes[qIdx]==='review'?'\ud83d\udd04 复习':'\ud83d\udcd7 新词';
+  document.getElementById('qProgress').textContent = type+' · 第 '+(qIdx+1)+' / '+quizList.length+' 个';
   document.getElementById('qMeaning').textContent = currentWord.meaning;
   document.getElementById('qPhon').textContent = currentWord.phonetic;
   const inp = document.getElementById('qInput');
@@ -1086,9 +1202,9 @@ function submitAnswer(){
   answered=true;
   const fb = document.getElementById('qFeedback');
   if(val===ans){
-    qScore++; fb.textContent='✅ 正确！'; fb.className='feedback ok';
+    qScore++; fb.textContent='\u2705 正确！'; fb.className='feedback ok';
   }else{
-    fb.innerHTML='❌ 正确拼写是 <b>'+esc(currentWord.word)+'</b>'; fb.className='feedback no';
+    fb.innerHTML='\u274c 正确拼写是 <b>'+esc(currentWord.word)+'</b>'; fb.className='feedback no';
   }
   document.getElementById('qInput').disabled=true;
   if(qIdx < quizList.length-1){
@@ -1101,13 +1217,12 @@ function nextWord(){ qIdx++; showQuestion(); }
 function finishQuiz(){
   const r = document.getElementById('qResult');
   r.style.display='block';
-  r.textContent = '🎉 完成！得分 '+qScore+' / '+quizList.length + (qScore===quizList.length?'（全对，太棒了！）':'');
+  r.textContent = '\ud83c\udf89 完成！得分 '+qScore+' / '+quizList.length + (qScore===quizList.length?'（全对，太棒了！）':'');
   document.getElementById('qRestart').style.display='block';
   document.getElementById('qNext').style.display='none';
 }
 function restartQuiz(){ startQuiz(); }
 
-// ---------- 发音 ----------
 function speak(t){
   try{
     if('speechSynthesis' in window){
@@ -1117,7 +1232,6 @@ function speak(t){
   }catch(e){}
 }
 
-// ---------- 标签切换 ----------
 function switchTab(t){
   document.getElementById('tabCards').classList.toggle('on', t==='cards');
   document.getElementById('tabQuiz').classList.toggle('on', t==='quiz');
@@ -1126,28 +1240,33 @@ function switchTab(t){
   if(t==='quiz') startQuiz();
 }
 
-// ---------- 自定义词库 ----------
 function applyCSV(){
   const v=document.getElementById('csvBox').value.trim();
   if(!v){ alert('请先粘贴 CSV 内容'); return; }
   const parsed=parseCSV(v);
   if(!parsed.length){ alert('解析失败，请检查格式：word,phonetic,meaning,example'); return; }
   WORDS=parsed;
-  try{ localStorage.setItem('spelling_csv', v); }catch(e){}
+  try{ localStorage.setItem(STORAGE_KEY_CSV, v); }catch(e){}
   renderCards(); startQuiz();
   alert('已应用，共 '+parsed.length+' 个单词');
 }
 function resetCSV(){
-  try{ localStorage.removeItem('spelling_csv'); }catch(e){}
+  try{ localStorage.removeItem(STORAGE_KEY_CSV); }catch(e){}
   document.getElementById('csvBox').value='';
   WORDS=parseCSV(BUILTIN); renderCards(); startQuiz();
+}
+function resetHistory(){
+  if(!confirm('确定清除所有学习记录？这将重置复习词池。')) return;
+  try{ localStorage.removeItem(STORAGE_KEY_HISTORY); }catch(e){}
+  renderCards();
+  alert('学习记录已清除');
 }
 function esc(s){ return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 // ---------- 初始化 ----------
 (function init(){
   try{
-    const saved=localStorage.getItem('spelling_csv');
+    const saved=localStorage.getItem(STORAGE_KEY_CSV);
     if(saved){ WORDS=parseCSV(saved); document.getElementById('csvBox').value=saved; }
   }catch(e){}
   renderCards();
